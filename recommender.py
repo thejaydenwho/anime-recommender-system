@@ -8,6 +8,8 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from rapidfuzz import process, fuzz
+from sentence_transformers import SentenceTransformer
+import os
 
 pd.set_option('display.max_columns', None)
 
@@ -19,6 +21,7 @@ tfidf = TfidfVectorizer(
     sublinear_tf=True         # Dampen repeated words in short texts
 )
 
+model = SentenceTransformer('mixedbread-ai/mxbai-embed-large-v1', device="cuda")
 scaler = MinMaxScaler()
 
 # Process CSV file
@@ -107,8 +110,24 @@ themes_vec = CountVectorizer(analyzer=lambda x: x)
 themes_matrix = themes_vec.fit_transform(df_clean['themes_list'])
 unique_themes = themes_vec.get_feature_names_out()
 
-# Synopsis matrix
-tfidf_matrix = tfidf.fit_transform(df_clean['synopsis'].fillna('')) 
+# Synopsis matrix and sentence transformers
+
+# Create data directory if it doesn't exist
+os.makedirs("data", exist_ok=True)
+embeddings_path = "data/synopsis_embeddings.npy"
+
+# Load cached embeddings if present, otherwise encode and save
+if os.path.exists(embeddings_path):
+    print("Loading pre-computed embeddings from disk...")
+    synopsis_embeddings = np.load(embeddings_path)
+else:
+    print("Generating embeddings with SentenceTransformer...")
+    synopses = df_clean['synopsis'].fillna('').tolist()
+    synopsis_embeddings = model.encode(synopses, show_progress_bar=True, device="cuda", batch_size=256)
+    np.save(embeddings_path, synopsis_embeddings)
+
+sbert_sparse = sp.csr_matrix(synopsis_embeddings.astype("float32"))
+tfidf_matrix = tfidf.fit_transform(df_clean['synopsis'])
 
 # Numeric matrices
 episodes_scaled = scaler.fit_transform(df_clean[['log_episodes']])
@@ -145,15 +164,16 @@ df_clean['quality_boost'] = (
     popularity_s * 0.05
 )
 
-# 1. Feature Weight Configuration
-w_genre  = 3.0
-w_theme  = 1.5
-w_demo   = 0.8
-w_tfidf  = 1.3
-w_rating = 0.5  # Ordinal content rating rank
-w_type   = 0.5  # One-hot media type
-w_year   = 0.2  # Scaled premiere year
-w_eps    = 0.1  # Log-scaled estimated episode count
+# Updated Feature Weight Configuration
+w_sbert  = 4.0  # Primary driver: semantic plot & thematic similarity
+w_genre  = 3.0  # Strong secondary filter: ensures baseline genre alignment
+w_theme  = 2.0  # Fine-grained tropes (e.g., Isekai, School, Time Travel)
+w_tfidf  = 0.5  # Keyterm backup for exact proper nouns/jargon
+w_demo   = 0.5  # Target audience (Shounen, Seinen, etc.)
+w_type   = 0.4  # Media format (TV vs Movie)
+w_rating = 0.3  # Age classification
+w_year   = 0.2  # Release era preference
+w_eps    = 0.1  # Show length preference
 
 # 2. Ensure 1D/2D dense arrays are explicit CSR sparse matrices
 year_sparse = sp.csr_matrix(year_scaled)
@@ -164,6 +184,7 @@ final_feature_matrix = sp.hstack([
     genre_matrix * w_genre,
     themes_matrix * w_theme,
     demographics_matrix * w_demo,
+    sbert_sparse * w_sbert,
     tfidf_matrix * w_tfidf,
     rating_matrix * w_rating,
     type_matrix * w_type,
@@ -266,7 +287,7 @@ def recommend_anime(title_query, df, feature_matrix, title_map, top_n=10, boost_
     return results.reset_index(drop=True)
 
 recommendations = recommend_anime(
-    title_query="Hunter x Hunter (2011)",
+    title_query="my dress up darling",
     df=df_clean,
     feature_matrix=final_feature_matrix,
     title_map=title_to_index,
