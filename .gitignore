@@ -1,0 +1,11 @@
+# Python virtual environment
+.venv/
+
+# Editor settings (VS Code)
+.vscode/
+
+# Python cache files (generated automatically during runtime)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
