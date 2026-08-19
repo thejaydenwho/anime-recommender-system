@@ -9,3 +9,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Contains the CSV used in finding recommendations (download from Kaggle instead)
+data/
