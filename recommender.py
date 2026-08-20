@@ -21,8 +21,6 @@ tfidf = TfidfVectorizer(
     sublinear_tf=True         # Dampen repeated words in short texts
 )
 
-# Switch between different NLP models
-model = SentenceTransformer('mixedbread-ai/mxbai-embed-large-v1', device="cuda")
 scaler = MinMaxScaler()
 
 # Process CSV file
@@ -97,6 +95,7 @@ rating_sparse = scaler.fit_transform(df_clean[['content_rating_rank']])
 df_clean['genres_list'] =  df_clean['genres'].fillna('').str.split('|')
 genre_vec = CountVectorizer(analyzer=lambda x: x)
 genre_sparse = genre_vec.fit_transform(df_clean['genres_list'])
+
 # Get the feature names if needed
 unique_genres = genre_vec.get_feature_names_out()
 
@@ -122,11 +121,15 @@ if os.path.exists(embeddings_path):
     synopsis_embeddings = np.load(embeddings_path)
 else:
     print("Generating embeddings with SentenceTransformer...")
+    # Switch between different NLP models
+    model = SentenceTransformer('mixedbread-ai/mxbai-embed-large-v1')
     synopses = df_clean['synopsis'].fillna('').tolist()
-    synopsis_embeddings = model.encode(synopses, show_progress_bar=True, device="cuda", batch_size=256)
+    synopsis_embeddings = model.encode(synopses, show_progress_bar=True, batch_size=32)
     np.save(embeddings_path, synopsis_embeddings)
 
 sbert_sparse = sp.csr_matrix(synopsis_embeddings.astype("float32"))
+
+# Create tfidf matrix
 tfidf_sparse = tfidf.fit_transform(df_clean['synopsis'])
 
 # Numeric matrices
@@ -300,7 +303,7 @@ def recommend_anime(title_query, df, feature_dict, title_map, top_n=10, boost_we
     return results.reset_index(drop=True)
 
 recommendations = recommend_anime(
-    title_query="the quintessential quintuplets",
+    title_query="why raeliana ended up at the duke's mansion",
     df=df_clean,
     feature_dict = feature_matrices,
     title_map=title_to_index,

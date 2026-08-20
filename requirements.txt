@@ -1,6 +1,7 @@
 pandas
-scipy
 numpy
+scipy
 matplotlib
 scikit-learn
 rapidfuzz
+sentence-transformers
