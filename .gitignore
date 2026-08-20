@@ -11,4 +11,4 @@ __pycache__/
 *.pyd
 
 # Contains the CSV used in finding recommendations (download from Kaggle instead)
-data/
+/.data/anime_info.csv

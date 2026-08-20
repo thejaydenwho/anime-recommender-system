@@ -21,6 +21,7 @@ tfidf = TfidfVectorizer(
     sublinear_tf=True         # Dampen repeated words in short texts
 )
 
+# Switch between different NLP models
 model = SentenceTransformer('mixedbread-ai/mxbai-embed-large-v1', device="cuda")
 scaler = MinMaxScaler()
 
@@ -68,7 +69,7 @@ df_clean['log_episodes'] = np.log1p(df_clean['episodes_clean'])
 
 # One-hot encoded media type
 type_encoder = OneHotEncoder(sparse_output=True, handle_unknown='ignore')
-type_matrix = type_encoder.fit_transform(df_clean[['type']])
+type_sparse = type_encoder.fit_transform(df_clean[['type']])
 
 # Define content rating hierarchy
 
@@ -90,27 +91,26 @@ rating_order = {
 
 # 4. Map the clean prefixes to ranks and scale
 df_clean['content_rating_rank'] = df_clean['content_abbreviation'].map(rating_order).fillna(0)
-rating_matrix = scaler.fit_transform(df_clean[['content_rating_rank']])
+rating_sparse = scaler.fit_transform(df_clean[['content_rating_rank']])
 
 # Treat genre names separated by '|' as distinct tokens
 df_clean['genres_list'] =  df_clean['genres'].fillna('').str.split('|')
 genre_vec = CountVectorizer(analyzer=lambda x: x)
-genre_matrix = genre_vec.fit_transform(df_clean['genres_list'])
+genre_sparse = genre_vec.fit_transform(df_clean['genres_list'])
 # Get the feature names if needed
 unique_genres = genre_vec.get_feature_names_out()
 
 # Repeat same process for demographics and themes
 df_clean['demographics_list'] =  df_clean['demographics'].fillna('').str.split('|')
 demographics_vec = CountVectorizer(analyzer=lambda x: x)
-demographics_matrix = demographics_vec.fit_transform(df_clean['demographics_list'])
+demographics_sparse = demographics_vec.fit_transform(df_clean['demographics_list'])
 unique_demographics = demographics_vec.get_feature_names_out()
 
 df_clean['themes_list'] =  df_clean['themes'].fillna('').str.split('|')
 themes_vec = CountVectorizer(analyzer=lambda x: x)
-themes_matrix = themes_vec.fit_transform(df_clean['themes_list'])
+themes_sparse = themes_vec.fit_transform(df_clean['themes_list'])
 unique_themes = themes_vec.get_feature_names_out()
 
-# Synopsis matrix and sentence transformers
 
 # Create data directory if it doesn't exist
 os.makedirs("data", exist_ok=True)
@@ -127,7 +127,7 @@ else:
     np.save(embeddings_path, synopsis_embeddings)
 
 sbert_sparse = sp.csr_matrix(synopsis_embeddings.astype("float32"))
-tfidf_matrix = tfidf.fit_transform(df_clean['synopsis'])
+tfidf_sparse = tfidf.fit_transform(df_clean['synopsis'])
 
 # Numeric matrices
 episodes_scaled = scaler.fit_transform(df_clean[['log_episodes']])
@@ -165,11 +165,11 @@ df_clean['quality_boost'] = (
 )
 
 # Updated Feature Weight Configuration
-w_sbert  = 4.0  # Primary driver: semantic plot & thematic similarity
-w_genre  = 3.0  # Strong secondary filter: ensures baseline genre alignment
+w_sbert  = 4.0  # Semantic plot & thematic similarity
+w_genre  = 4.0  # Ensures baseline genre alignment
 w_theme  = 2.0  # Fine-grained tropes (e.g., Isekai, School, Time Travel)
 w_tfidf  = 0.5  # Keyterm backup for exact proper nouns/jargon
-w_demo   = 0.5  # Target audience (Shounen, Seinen, etc.)
+w_demo   = 1.0  # Target audience (Shounen, Seinen, etc.)
 w_type   = 0.4  # Media format (TV vs Movie)
 w_rating = 0.3  # Age classification
 w_year   = 0.2  # Release era preference
@@ -180,17 +180,17 @@ year_sparse = sp.csr_matrix(year_scaled)
 episodes_sparse = sp.csr_matrix(episodes_scaled)
 
 # 3. Stack all feature matrices horizontally
-final_feature_matrix = sp.hstack([
-    genre_matrix * w_genre,
-    themes_matrix * w_theme,
-    demographics_matrix * w_demo,
-    sbert_sparse * w_sbert,
-    tfidf_matrix * w_tfidf,
-    rating_matrix * w_rating,
-    type_matrix * w_type,
-    year_sparse * w_year,
-    episodes_sparse * w_eps
-]).tocsr()  # Convert to Compressed Sparse Row format for fast vector ops
+feature_matrices = {
+    'sbert': (sbert_sparse, w_sbert),
+    'genre': (genre_sparse, w_genre),
+    'theme': (themes_sparse, w_theme),
+    'tfidf': (tfidf_sparse, w_tfidf),
+    'demo': (demographics_sparse, w_demo),
+    'type': (type_sparse, w_type),
+    'rating': (rating_sparse, w_rating),
+    'year': (year_sparse, w_year),
+    'eps': (episodes_sparse, w_eps)
+}
 
 def build_title_lookup(df):
     title_to_index = {}
@@ -260,39 +260,51 @@ def get_anime_index_robust(title_query, title_map, score_cutoff=75):
 
     return None, None
 
-def recommend_anime(title_query, df, feature_matrix, title_map, top_n=10, boost_weight=0.15):
-    # Use robust lookup
+def recommend_anime(title_query, df, feature_dict, title_map, top_n=10, boost_weight=0.10):
+    # 1. Locate index
     idx, matched_title = get_anime_index_robust(title_query, title_map)
     
     if idx is None:
         return f"Error: Anime '{title_query}' not found."
     
-    # 1. Calculate Content Similarity
-    query_vec = feature_matrix[idx]
-    content_sim = cosine_similarity(query_vec, feature_matrix).flatten()
-    
-    # 2. Apply Post-Similarity Quality Boost
+    # 2. Accumulate weighted cosine similarities (Late Fusion)
+    num_samples = df.shape[0]
+    content_sim = np.zeros(num_samples)
+    total_weight = sum(weight for _, weight in feature_dict.values())
+
+    for name, (matrix, weight) in feature_dict.items():
+        # Use idx : idx + 1 to preserve the 2D shape (1, n_features)
+        query_vec = matrix[idx : idx + 1]
+        
+        # Now cosine_similarity will receive a 2D array and execute cleanly
+        sim = cosine_similarity(query_vec, matrix).flatten()
+        
+        content_sim += sim * weight
+
+    # Normalize similarity by total weight sum to keep values in [0, 1] range
+    content_sim /= total_weight
+
+    # 3. Apply post-similarity quality boost
     quality_boost = df['quality_boost'].values
-    final_scores = (1 - boost_weight) * content_sim + boost_weight * quality_boost
-    
-    # 3. Rank Top Results
+    final_scores = (1 - boost_weight) * content_sim + (boost_weight * quality_boost)
+
+    # 4. Filter out input anime itself from top results
     top_indices = np.argsort(final_scores)[::-1]
     top_indices = [i for i in top_indices][:top_n]
-    
-    # 4. Format Results
+
+    # 5. Format results
     results = df.iloc[top_indices][['title', 'title_english', 'score']].copy()
     results['similarity'] = content_sim[top_indices].round(4)
-    results['boosted_similarity'] = final_scores[top_indices].round(4)
-    
+    results['final_score'] = final_scores[top_indices].round(4)
+
     return results.reset_index(drop=True)
 
 recommendations = recommend_anime(
-    title_query="my dress up darling",
+    title_query="the quintessential quintuplets",
     df=df_clean,
-    feature_matrix=final_feature_matrix,
+    feature_dict = feature_matrices,
     title_map=title_to_index,
     top_n=20,
-    boost_weight=0.1
 )
 
 print(recommendations)
