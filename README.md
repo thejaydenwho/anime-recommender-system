@@ -1,4 +1,3 @@
-Markdown
 # anime-recommender-system
 
 A content-based hybrid anime recommendation engine built in Python. This project combines categorical metadata, dense semantic text vectorization, and community popularity metrics to generate personalized recommendations.
@@ -34,4 +33,4 @@ A content-based hybrid anime recommendation engine built in Python. This project
 
 ## Data Source & Acknowledgements
 
-This project uses the Comprehensive MyAnimeList (MAL) Dataset 2026 by nafiulislam490, available on [Kaggle](https://www.kaggle.com/datasets/nafiulislam490/comprehensive-myanimelist-mal-dataset-2026) under the CC BY-SA 4.0 license.
+This project uses the Comprehensive MyAnimeList (MAL) Dataset 2026 by nafiulislam490, available for download on [Kaggle](https://www.kaggle.com/datasets/nafiulislam490/comprehensive-myanimelist-mal-dataset-2026) under the CC BY-SA 4.0 license.
